@@ -1,0 +1,405 @@
+# ==========================================================================================================================================================
+# mappo gnn class
+# purpose: class to train multiple agents
+# ==========================================================================================================================================================
+
+import os
+
+import numpy as np
+import torch as T
+from torch_geometric.data import Batch
+
+from mappo_gnn_agent import mappo_gnn_agent
+from mappo_gnn_replay_buffer import mappo_gnn_replay_buffer
+
+
+class mappo_gnn:
+
+    def __init__(self, mode, scenario_name, training_name, lr_actor, lr_critic, num_agents, batch_size, gamma,
+                 clip_coeff, num_epochs, gae_lambda, entropy_coeff, use_huber_loss, huber_delta, use_clipped_value_loss,
+                 critic_loss_coeff, grad_clipping, grad_norm_clip, optimizer, lr_scheduler, obs_dims,
+                 dgcn_output_dims, somu_lstm_hidden_size, somu_lstm_num_layers, somu_lstm_dropout, num_somu_lstm,
+                 scmu_lstm_hidden_size, scmu_lstm_num_layers, scmu_lstm_dropout, num_scmu_lstm,
+                 somu_multi_att_num_heads, somu_multi_att_dropout, scmu_multi_att_num_heads, scmu_multi_att_dropout, 
+                 actor_fc_output_dims, actor_fc_dropout_p, softmax_actions_dims, softmax_actions_dropout_p, gatv2_input_dims, 
+                 gatv2_output_dims, gatv2_num_heads, gatv2_dropout_p, gatv2_bool_concat, gmt_hidden_dims, gmt_output_dims, 
+                 critic_fc_output_dims, critic_fc_dropout_p):
+
+        """ class constructor for attributes of the mappo class (for multiple agents) """
+
+        # list to store mappo agents
+        self.mappo_gnn_agents_list = []
+
+        # number of agent and adversarial drones
+        self.num_agents = num_agents
+
+        # batch of memory to sample
+        self.batch_size = batch_size
+
+        # factor in discount rate for general advantage estimation
+        self.gamma = gamma
+
+        # variable for clip
+        self.clip_coeff = clip_coeff
+
+        # number of epochs
+        self.num_epochs = num_epochs
+
+        # factor in discount rate for general advantage estimation
+        self.gae_lambda = gae_lambda
+
+        # constant to scale entropy
+        self.entropy_coeff = entropy_coeff
+
+        # boolean to determine to use huber loss for value loss
+        self.use_huber_loss = use_huber_loss
+
+        # huber loss variable
+        self.huber_delta = huber_delta
+
+        # boolean to choose to use clipped or original value loss
+        self.use_clipped_value_loss = use_clipped_value_loss
+
+        # constant to scale critic_loss
+        self.critic_loss_coeff = critic_loss_coeff
+
+        # gradient clipping
+        self.grad_clipping = grad_clipping
+        self.grad_norm_clip = grad_norm_clip
+
+        # iterate over num_agents
+        for i in range(num_agents):
+
+            # append mappo agent to list
+            self.mappo_gnn_agents_list.append(
+                mappo_gnn_agent(mode=mode, scenario_name=scenario_name, training_name=training_name,
+                                lr_actor=lr_actor, lr_critic=lr_critic,
+                                optimizer=optimizer, lr_scheduler=lr_scheduler, obs_dims=obs_dims,
+                                dgcn_output_dims=dgcn_output_dims,
+                                somu_lstm_hidden_size=somu_lstm_hidden_size,
+                                somu_lstm_num_layers=somu_lstm_num_layers,
+                                somu_lstm_dropout=somu_lstm_dropout, num_somu_lstm=num_somu_lstm,
+                                scmu_lstm_hidden_size=scmu_lstm_hidden_size,
+                                scmu_lstm_num_layers=scmu_lstm_num_layers,
+                                scmu_lstm_dropout=scmu_lstm_dropout,
+                                num_scmu_lstm=num_scmu_lstm,
+                                somu_multi_att_num_heads=somu_multi_att_num_heads,
+                                somu_multi_att_dropout=somu_multi_att_dropout,
+                                scmu_multi_att_num_heads=scmu_multi_att_num_heads,
+                                scmu_multi_att_dropout=scmu_multi_att_dropout,
+                                actor_fc_output_dims=actor_fc_output_dims,
+                                actor_fc_dropout_p=actor_fc_dropout_p,
+                                softmax_actions_dims=softmax_actions_dims,
+                                softmax_actions_dropout_p=softmax_actions_dropout_p,
+                                gatv2_input_dims = gatv2_input_dims, 
+                                gatv2_output_dims = gatv2_output_dims, 
+                                gatv2_num_heads = gatv2_num_heads, gatv2_dropout_p = gatv2_dropout_p, 
+                                gatv2_bool_concat = gatv2_bool_concat, 
+                                gmt_hidden_dims = gmt_hidden_dims, 
+                                gmt_output_dims = gmt_output_dims, 
+                                critic_fc_output_dim = critic_fc_output_dims, 
+                                critic_fc_dropout_p = critic_fc_dropout_p))
+
+            # update actor model_names attributes for checkpoints
+            self.mappo_gnn_agents_list[i].mappo_gnn_actor.model_name = "mappo_gnn_actor"
+
+            # update actor checkpoints_path attributes
+            self.mappo_gnn_agents_list[i].mappo_gnn_actor.checkpoint_path = os.path.join(
+                self.mappo_gnn_agents_list[i].mappo_gnn_actor.checkpoint_dir,
+                self.mappo_gnn_agents_list[i].mappo_gnn_actor.model_name + "_" + str(i) + ".pt")
+
+            # update critic model_names attributes for checkpoints
+            self.mappo_gnn_agents_list[i].mappo_gnn_critic.model_name = "mappo_gnn_critic"
+
+            # update critic checkpoints_path attributes
+            self.mappo_gnn_agents_list[i].mappo_gnn_critic.checkpoint_path = os.path.join(
+                self.mappo_gnn_agents_list[i].mappo_gnn_critic.checkpoint_dir,
+                self.mappo_gnn_agents_list[i].mappo_gnn_critic.model_name + "_" + str(i) + ".pt")
+
+        # if mode is not test
+        if mode == 'train':
+
+            # create replay buffer
+            self.replay_buffer = mappo_gnn_replay_buffer(num_agents=num_agents, batch_size=batch_size)
+
+        # if test mode
+        elif mode == 'test':
+
+            # load all models
+            self.load_all_models()
+
+        elif mode == "load_and_train":
+
+            # create replay buffer
+            self.replay_buffer = mappo_gnn_replay_buffer(num_agents=num_agents, batch_size=batch_size)
+
+            # load all models
+            self.load_all_models()
+
+    def select_actions(self, mode, actor_state_list):
+
+        """ function to select actions for the all agents given state observed by respective agent """
+
+        # initialise empty list to store actions and log probabiities and all actions from all agents
+        actions_list = []
+        actions_log_probs_list = []
+
+        # iterate over num_agents
+        for agent_index, agent in enumerate(self.mappo_gnn_agents_list):
+
+            # select action for respective agent from corresponding list of states observed by agent
+            action, action_log_probs = agent.select_action(mode=mode, state=actor_state_list[agent_index])
+
+            # append actions to respective lists
+            actions_list.append(u_action)
+            actions_log_probs_list.append(action_log_probs)
+
+        # training
+        if mode != "test":
+
+            return np.array(actions_list), np.array(actions_log_probs_list)
+
+        # test
+        else:
+
+            return np.array(actions_list), None
+
+    def apply_gradients_mappo_gnn(self):
+
+        """ function to apply gradients for mappo to learn from replay buffer """
+
+        # list to store metrics for logging
+        actor_loss_list = []
+        critic_loss_list = []
+        actor_grad_norm_list = []
+        critic_grad_norm_list = []
+        policy_ratio_list = []
+
+        # enumerate over agents
+        for agent_index, agent in enumerate(self.mappo_gnn_agents_list):
+
+            # obtain value_normaliser
+            value_normaliser = agent.mappo_gnn_critic.popart
+
+            # variables to store metric
+            avg_actor_loss_value = 0.0
+            avg_critic_loss_value = 0.0
+            avg_actor_grad_norm_value = 0.0
+            avg_critic_grad_norm_value = 0.0
+            avg_policy_ratio_value = 0.0
+
+            # obtain device (should be same for all models)
+            device = self.mappo_gnn_agents_list[agent_index].mappo_gnn_actor.device
+
+            # generate batch tensor for graph multiset transformer in critic model
+            critic_batch = T.tensor([i for i in range(self.batch_size) for j in range(len(self.mappo_gnn_agents_list))], dtype=T.long).to(
+                device)
+
+            # iterate over number of epochs
+            for _ in range(self.num_epochs):
+
+                # sample replay buffer
+                actor_state_list, actor_action_list, actor_action_log_probs_list, critic_state_list, critic_state_value_list, rewards, \
+                terminal, batches = self.replay_buffer.sample_log(self.batch_size)
+
+                # convert rewards and critic state value list
+                critic_state_value_list_t = T.tensor(critic_state_value_list, dtype=T.float).to(device)
+
+                # numpy arrays for advantage and returns
+                advantages = np.zeros(len(rewards[agent_index]), dtype=np.float32)
+                returns = np.zeros(len(rewards[agent_index]), dtype=np.float32)
+
+                # variable to track gae
+                gae = 0
+
+                # iterate over timesteps 
+                for step in reversed(range(len(rewards[agent_index]) - 1)):
+
+                    # obtain td_delta error
+                    td_delta = rewards[agent_index][step] + self.gamma * value_normaliser.denormalize(
+                        critic_state_value_list_t[agent_index][step + 1]) * (1 - terminal[agent_index][step + 1]) - \
+                               value_normaliser.denormalize(critic_state_value_list_t[agent_index][step])
+
+                    # obtain gae
+                    gae = td_delta + self.gamma * self.gae_lambda * gae
+
+                    # obtain advantage and returns
+                    advantages[step] = np.squeeze(gae)
+                    returns[step] = np.squeeze(
+                        gae + value_normaliser.denormalize(critic_state_value_list_t[agent_index][step]))
+
+                # obtain normalised advantages
+                advantages_copy = advantages.copy()
+                mean_advantages = np.nanmean(advantages_copy)
+                std_advantages = np.nanstd(advantages_copy)
+                advantages = (advantages - mean_advantages) / (std_advantages + 1e-5)
+
+                # tensor for advatange and returns
+                advantages = T.tensor(advantages, dtype=T.float).to(device)
+                returns = T.tensor(returns, dtype=T.float).to(device)
+
+                # iterate over batches
+                for batch in batches:
+
+                    # covert features to tensors
+                    actor_state = T.tensor(actor_state_list[agent_index][batch], dtype=T.float).to(device)
+                    critic_state = Batch().from_data_list([critic_state_list[i] for i in batch]).to(device)
+                    critic_state_value = T.tensor(critic_state_value_list[agent_index][batch], dtype=T.float).to(device)
+                    actor_action_log_probs = T.tensor(actor_action_log_probs_list[agent_index][batch],
+                                                        dtype=T.float).to(device)
+                    actor_action = T.tensor(actor_action_list[agent_index][batch], dtype=T.float).to(device)
+
+                    # obtain state value based on current critic
+                    critic_state_value_prime = agent.mappo_gnn_critic.forward(critic_state, critic_batch)
+
+                    # obtain actions prime softmax
+                    actor_action_prime_softmax = agent.mappo_gnn_actor.forward(actor_state)
+
+                    # obtain distribution
+                    actor_action_prime_cat_dist = T.distributions.categorical.Categorical(actor_action_prime_softmax)
+
+                    # obtain log probs of actions prime
+                    actor_action_prime_log_probs = actor_action_prime_cat_dist.log_prob(actor_action)
+
+                    # obtain entropy from actions
+                    actor_action_prime_entropy = actor_action_prime_cat_dist.entropy().mean()
+
+                    # obtain policy ratio
+                    policy_ratio = T.exp(actor_action_prime_log_probs - actor_action_log_probs)
+
+                    # obtain weighted policy ratio
+                    weighted_policy_ratio = policy_ratio * T.unsqueeze(advantages[batch], dim=1)
+
+                    # obtain weighted clipped policy ratio
+                    weighted_clipped_policy_ratio = T.clamp(policy_ratio, 1 - self.clip_coeff,
+                                                            1 + self.clip_coeff) * T.unsqueeze(advantages[batch], dim=1)
+
+                    # obtain actor loss 
+                    actor_loss = - T.sum(T.min(weighted_policy_ratio, weighted_clipped_policy_ratio), dim=-1,
+                                         keepdim=True).mean() - \
+                                 (actor_u_action_prime_entropy + actor_c_action_prime_entropy) * self.entropy_coeff
+
+                    # reset gradients for actor model to zero
+                    agent.mappo_gnn_actor.optimizer.zero_grad()
+
+                    # actor model back propagation
+                    actor_loss.backward()
+
+                    # check if gradient clipping is needed
+                    if self.grad_clipping == True:
+                        # gradient norm clipping for critic model
+                        actor_grad_norm = T.nn.utils.clip_grad_norm_(agent.mappo_gnn_actor.parameters(),
+                                                                     max_norm=self.grad_norm_clip, norm_type=2,
+                                                                     error_if_nonfinite=True)
+
+                    # apply gradients to actor model
+                    agent.mappo_gnn_actor.optimizer.step()
+
+                    # obtain clipped state value
+                    critic_state_value_clipped = T.unsqueeze(critic_state_value, dim=1) + \
+                                                 (critic_state_value_prime - T.unsqueeze(critic_state_value,
+                                                                                         dim=1)).clamp(
+                                                     - self.clip_coeff, self.clip_coeff)
+
+                    # update value normaliser / popart
+                    value_normaliser.update(returns[batch])
+
+                    # check if to use huber loss
+                    if self.use_huber_loss == True:
+
+                        # obtain huber loss for clipped and original
+                        critic_loss_clipped = T.nn.functional.huber_loss(
+                            input=T.reshape(critic_state_value_clipped, (1, -1)),
+                            target=value_normaliser.normalize(returns[batch]), delta=self.huber_delta)
+                        critic_loss_original = T.nn.functional.huber_loss(
+                            input=T.reshape(critic_state_value_prime, (1, -1)),
+                            target=value_normaliser.normalize(returns[batch]), delta=self.huber_delta)
+
+                    # else use mse
+                    else:
+
+                        # obtain mse  loss for clipped and original
+                        critic_loss_clipped = T.nn.functional.mse_loss(
+                            input=T.reshape(critic_state_value_clipped, (1, -1)),
+                            target=value_normaliser.normalize(returns[batch]))
+                        critic_loss_original = T.nn.functional.mse_loss(
+                            input=T.reshape(critic_state_value_prime, (1, -1)),
+                            target=value_normaliser.normalize(returns[batch]))
+
+                    # check if to use clipped losses 
+                    if self.use_clipped_value_loss == True:
+
+                        # obtain max of losses
+                        critic_loss = T.max(critic_loss_original, critic_loss_clipped)
+
+                    # else use original
+                    else:
+
+                        critic_loss = critic_loss_original
+
+                    # reset gradients for critic model to zero
+                    agent.mappo_gnn_critic.optimizer.zero_grad()
+
+                    # critic model back propagation
+                    (critic_loss * self.critic_loss_coeff).backward()
+
+                    # check if gradient clipping is needed
+                    if self.grad_clipping == True:
+                        # gradient norm clipping for critic model
+                        critic_grad_norm = T.nn.utils.clip_grad_norm_(agent.mappo_gnn_critic.parameters(),
+                                                                      max_norm=self.grad_norm_clip, norm_type=2,
+                                                                      error_if_nonfinite=True)
+
+                    # apply gradients to critic model
+                    agent.mappo_gnn_critic.optimizer.step()
+
+                    # update metric variables
+                    avg_actor_loss_value += actor_loss.item()
+                    avg_critic_loss_value += critic_loss.item()
+                    avg_policy_ratio_value += policy_ratio.mean().item()
+
+                    # check if gradient clipping is used
+                    if self.grad_clipping == True:
+                        avg_actor_grad_norm_value += actor_grad_norm.item()
+                        avg_critic_grad_norm_value += critic_grad_norm.item()
+
+            # obtain average of metrics
+            avg_actor_loss_value += avg_actor_loss_value / (self.num_epochs * len(batches))
+            avg_critic_loss_value += avg_critic_loss_value / (self.num_epochs * len(batches))
+            avg_actor_grad_norm_value += avg_actor_grad_norm_value / (self.num_epochs * len(batches))
+            avg_critic_grad_norm_value += avg_critic_grad_norm_value / (self.num_epochs * len(batches))
+            avg_policy_ratio_value += avg_policy_ratio_value / (self.num_epochs * len(batches))
+
+            # append metrics to list
+            actor_loss_list.append(avg_actor_loss_value)
+            critic_loss_list.append(avg_critic_loss_value)
+            actor_grad_norm_list.append(avg_actor_grad_norm_value)
+            critic_grad_norm_list.append(avg_critic_grad_norm_value)
+            policy_ratio_list.append(avg_policy_ratio_value)
+
+        # clear replay buffer
+        self.replay_buffer.clear_log()
+
+        return actor_loss_list, critic_loss_list, actor_grad_norm_list, critic_grad_norm_list, policy_ratio_list
+
+    def save_all_models(self):
+
+        """ save weights for all models """
+
+        print("saving models!")
+
+        # iterate over num_agents
+        for agent in self.mappo_gnn_agents_list:
+            # save each model
+            agent.save_models()
+
+    def load_all_models(self):
+
+        """ load weights for all models """
+
+        print("loading model!")
+
+        # iterate over num_agents
+        for agent in self.mappo_gnn_agents_list:
+            # load each model
+            agent.load_models()
